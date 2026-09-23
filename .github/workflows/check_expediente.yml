@@ -21,11 +21,15 @@ jobs:
       - name: Build
         run: mvn -B package --no-transfer-progress
 
-      # Reemplaza el "apt-get install" manual: --with-deps instala automáticamente
-      # los paquetes de sistema correctos para la versión de Ubuntu del runner,
-      # en vez de una lista fija que se rompe cuando GitHub cambia de imagen.
+      # NOTA: no usamos "mvn exec:java -Dexec.mainClass=..." aquí a propósito.
+      # El pom.xml de este proyecto tiene el exec-maven-plugin con el mainClass
+      # fijado directamente a ExpedienteChecker (no a la propiedad ${exec.mainClass}),
+      # así que "-Dexec.mainClass" en la línea de comandos NO tiene efecto y
+      # mvn exec:java siempre lanza el bot completo, no la CLI de Playwright.
+      # Por eso invocamos java -cp directamente contra el uber-jar ya construido,
+      # que sí ejecuta la clase que pedimos.
       - name: Install Playwright Chromium + OS deps
-        run: mvn -B exec:java -Dexec.mainClass="com.microsoft.playwright.CLI" -Dexec.args="install --with-deps chromium" --no-transfer-progress
+        run: java -cp target/expediente-checker.jar com.microsoft.playwright.CLI install --with-deps chromium
 
       - name: Run ExpedienteChecker
         env:
