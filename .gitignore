@@ -1,0 +1,20 @@
+# ── Build output ──────────────────────────────────────────────────────────────
+target/
+*.class
+*.jar
+
+# ── Screenshots (generated at runtime) ────────────────────────────────────────
+screenshots/
+
+# ── IDE files ─────────────────────────────────────────────────────────────────
+.idea/
+*.iml
+.vscode/
+*.xml.bak
+
+# ── OS files ──────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── Maven wrapper (optional, keep if you add it) ───────────────────────────────
+.mvn/timing.properties
