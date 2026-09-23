@@ -15,6 +15,8 @@ import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.Arrays;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * ExpedienteChecker — Automatización para consultar el estado de expediente en Infoext2.
@@ -75,7 +77,6 @@ public class ExpedienteChecker {
             page.waitForTimeout(3000);
             screenshot(page, "step1_landing");
 
-            // WAF detection
             if (page.content().toLowerCase().contains("fortigate")
                     || page.content().toLowerCase().contains("access denied")) {
                 log("WAF", "IP bloqueada. Abortando.");
@@ -85,9 +86,6 @@ public class ExpedienteChecker {
             }
 
             // ── STEP 2: Click "ENTRAR FORMULARIO" ────────────────────────────
-            // The landing page (HTML confirmed) shows two choices: Cl@ve and Formulario.
-            // "ENTRAR FORMULARIO" uses onclick="entradaFormu()" which submits #frmFormu.
-            // The actual form fields are on the NEXT page: /infoext2/entradaFormulario.html
             log("CLICK", "Pulsando 'ENTRAR FORMULARIO'...");
             page.locator(
                     "a[onclick*='entradaFormu'], " +
@@ -98,123 +96,194 @@ public class ExpedienteChecker {
             page.waitForLoadState(LoadState.DOMCONTENTLOADED);
             page.waitForTimeout(3000);
             screenshot(page, "step2_formulario_page");
-            log("URL", "Página tras click: " + page.url());
+            log("URL", "Página del formulario: " + page.url());
 
-            // Dump all form fields found — helps tune selectors on next run
-            dumpInputs(page);
+            // ── STEP 3: Fill known fields ─────────────────────────────────────
+            // Confirmed field IDs from DEBUG INPUTS on previous run:
+            //   #nie, #fechaPresentacion, #anio, #captcha (name=txtCaptcha)
+            log("FORM", "Rellenando NIE, fecha y año de nacimiento...");
 
-            // ── STEP 3: Fill the form ─────────────────────────────────────────
-            log("FORM", "Rellenando NIE, fecha de solicitud y año de nacimiento...");
+            fillById(page, "nie",                MY_NIE);
+            fillById(page, "fechaPresentacion",  FECHA_SOLICITUD);
+            fillById(page, "anio",               ANIO_NACIMIENTO);
 
-            // NIE / NIF / document identifier
-            fillFirstMatch(page, MY_NIE,
-                    "input[id*='nie' i]",
-                    "input[name*='nie' i]",
-                    "input[id*='nif' i]",
-                    "input[name*='nif' i]",
-                    "input[id*='identificacion' i]",
-                    "input[id*='idSolicitante' i]",
-                    "input[id*='documento' i]",
-                    "input[placeholder*='NIE' i]",
-                    "input[placeholder*='NIF' i]"
-            );
+            screenshot(page, "step3_before_captcha");
 
-            // Fecha de solicitud
-            fillFirstMatch(page, FECHA_SOLICITUD,
-                    "input[id*='fecha' i]",
-                    "input[name*='fecha' i]",
-                    "input[placeholder*='fecha' i]",
-                    "input[type='date']"
-            );
+            // ── STEP 4: Solve CAPTCHA ─────────────────────────────────────────
+            // The form has #captcha (name=txtCaptcha).
+            // Spanish gov portals typically show a simple arithmetic CAPTCHA
+            // e.g. "¿Cuánto es 3 + 5?" → we parse and compute the answer.
+            boolean captchaSolved = solveCaptcha(page);
+            if (!captchaSolved) {
+                log("CAPTCHA", "⚠️  No se pudo resolver el CAPTCHA automáticamente.");
+                screenshot(page, "step4_captcha_fail");
+                // Still attempt submit — might work without CAPTCHA on some requests
+            }
 
-            // Año de nacimiento
-            fillFirstMatch(page, ANIO_NACIMIENTO,
-                    "input[id*='anio' i]",
-                    "input[name*='anio' i]",
-                    "input[id*='ano' i]",
-                    "input[name*='ano' i]",
-                    "input[id*='nacimiento' i]",
-                    "input[name*='nacimiento' i]",
-                    "input[placeholder*='año' i]",
-                    "input[placeholder*='nacimiento' i]"
-            );
+            screenshot(page, "step4_form_complete");
 
-            screenshot(page, "step3_form_filled");
-
-            // ── STEP 4: Submit ────────────────────────────────────────────────
+            // ── STEP 5: Submit ────────────────────────────────────────────────
             log("SUBMIT", "Enviando formulario...");
             page.locator(
                     "input[type='submit'], button[type='submit'], " +
                     "input[value*='Consultar' i], button:has-text('Consultar'), " +
                     "input[value*='Aceptar' i], button:has-text('Aceptar'), " +
-                    "input[value*='Verificar' i], button:has-text('Verificar'), " +
-                    "a[onclick*='submit'], a:has-text('Consultar')"
+                    "a[onclick*='submit']"
             ).first().click();
 
             page.waitForLoadState(LoadState.DOMCONTENTLOADED);
             page.waitForTimeout(5000);
-            screenshot(page, "step4_resultado");
+            screenshot(page, "step5_resultado");
 
-            // ── STEP 5: Parse ─────────────────────────────────────────────────
-            String pageText = page.content().toUpperCase();
-            // Log first 600 chars so we can read result state in Actions log
-            log("CONTENT_SAMPLE", pageText.substring(0, Math.min(600, pageText.length())));
-            parseAndNotify(pageText);
+            // ── STEP 6: Parse visible text (not raw HTML) ─────────────────────
+            // innerText gives us clean readable text without HTML tags
+            String bodyText = "";
+            try {
+                bodyText = page.locator("body").innerText().toUpperCase();
+            } catch (Exception e) {
+                bodyText = page.content().toUpperCase();
+            }
+
+            log("RESULT TEXT", bodyText.substring(0, Math.min(1000, bodyText.length())));
+            parseAndNotify(bodyText, page.url());
 
             browser.close();
 
         } catch (Exception e) {
             log("ERROR", "Fallo durante la ejecución: " + e.getMessage());
+            sendTelegram("❌ Error en el bot de expediente: " + e.getMessage());
             System.exit(1);
         }
     }
 
-    // ── Fill first matching selector among candidates ─────────────────────────
-    private static void fillFirstMatch(Page page, String value, String... selectors) {
-        for (String selector : selectors) {
-            try {
-                Locator loc = page.locator(selector);
-                if (loc.count() > 0) {
-                    loc.first().clear();
-                    loc.first().fill(value);
-                    log("FORM OK", "Rellenado [" + selector + "] = " + value);
-                    return;
-                }
-            } catch (Exception ignored) {}
-        }
-        log("FORM WARN", "Campo no encontrado para valor: " + value);
-    }
-
-    // ── Dump all visible inputs to log (debug helper) ─────────────────────────
-    private static void dumpInputs(Page page) {
+    // ── Solve arithmetic CAPTCHA ──────────────────────────────────────────────
+    // Searches the page for patterns like "3 + 5", "7 - 2", "4 * 3"
+    // and fills the answer into the captcha input.
+    private static boolean solveCaptcha(Page page) {
         try {
-            Object result = page.evaluate(
-                    "() => Array.from(document.querySelectorAll('input,select,textarea'))" +
-                    ".map(e => e.tagName + '#' + (e.id||'') + '[name=' + (e.name||'') + '][type=' + (e.type||'') + ']')" +
-                    ".join(' | ')");
-            log("DEBUG INPUTS", result != null ? result.toString() : "(ninguno)");
-        } catch (Exception ignored) {}
+            // Check if captcha input exists
+            if (page.locator("#captcha, input[name='txtCaptcha']").count() == 0) {
+                log("CAPTCHA", "No se detectó campo CAPTCHA. Continuando...");
+                return true;
+            }
+
+            // Get the page text to find the arithmetic question
+            String pageText = page.locator("body").innerText();
+            log("CAPTCHA", "Buscando expresión aritmética en: " + pageText.substring(0, Math.min(500, pageText.length())));
+
+            // Pattern: "3 + 5", "12 - 4", "3 × 5", "3 * 5", "cuánto es N op N"
+            Pattern mathPattern = Pattern.compile("(\\d+)\\s*([+\\-×\\*xX])\\s*(\\d+)");
+            Matcher matcher = mathPattern.matcher(pageText);
+
+            if (matcher.find()) {
+                int a = Integer.parseInt(matcher.group(1));
+                String op = matcher.group(2).trim();
+                int b = Integer.parseInt(matcher.group(3));
+                int result;
+
+                switch (op) {
+                    case "+": result = a + b; break;
+                    case "-": result = a - b; break;
+                    case "*":
+                    case "×":
+                    case "x":
+                    case "X": result = a * b; break;
+                    default:  result = a + b; break;
+                }
+
+                log("CAPTCHA", "Expresión detectada: " + a + " " + op + " " + b + " = " + result);
+                page.locator("#captcha, input[name='txtCaptcha']").first().fill(String.valueOf(result));
+                log("CAPTCHA", "✅ CAPTCHA resuelto: " + result);
+                return true;
+            }
+
+            // Try to find captcha as an image — log src so we can inspect it
+            try {
+                String captchaImgSrc = page.evaluate(
+                    "() => { const img = document.querySelector('img[src*=\"captcha\"], img[id*=\"captcha\"]'); return img ? img.src : 'no-img'; }"
+                ).toString();
+                log("CAPTCHA IMG", captchaImgSrc);
+            } catch (Exception ignored) {}
+
+            log("CAPTCHA", "No se encontró expresión aritmética reconocible.");
+            return false;
+
+        } catch (Exception e) {
+            log("CAPTCHA ERR", e.getMessage());
+            return false;
+        }
     }
 
-    // ── Parse result page and send Telegram if needed ─────────────────────────
-    private static void parseAndNotify(String pageText) {
-        if (pageText.contains("FAVORABLE")) {
-            log("STATUS ✅", "¡FAVORABLE detectado!");
-            sendTelegram("🎉 ¡Buenas noticias! Tu expediente (" + MY_NIE + ") ha cambiado a: *FAVORABLE*. 🥳");
+    // ── Fill by exact ID ──────────────────────────────────────────────────────
+    private static void fillById(Page page, String id, String value) {
+        try {
+            Locator loc = page.locator("#" + id);
+            if (loc.count() > 0) {
+                loc.first().clear();
+                loc.first().fill(value);
+                log("FORM OK", "#" + id + " = " + value);
+            } else {
+                log("FORM WARN", "Campo #" + id + " no encontrado.");
+            }
+        } catch (Exception e) {
+            log("FORM ERR", "#" + id + ": " + e.getMessage());
+        }
+    }
 
-        } else if (pageText.contains("EN TRÁMITE") || pageText.contains("EN TRAMITE")) {
-            log("STATUS ⏳", "Expediente en trámite. Sin cambios.");
+    // ── Parse result and ALWAYS send Telegram ────────────────────────────────
+    // User wants a notification for ANY state — useful to verify Telegram works.
+    private static void parseAndNotify(String bodyText, String currentUrl) {
+        String status;
+        String emoji;
+        boolean isImportant;
 
-        } else if (pageText.contains("DENEGADO") || pageText.contains("ARCHIVADO") || pageText.contains("INADMITIDO")) {
-            log("STATUS ⚠️", "Resolución final negativa.");
-            sendTelegram("⚠️ Tu expediente (" + MY_NIE + ") tiene una actualización: posible resolución negativa.");
+        if (bodyText.contains("FAVORABLE")) {
+            status      = "✅ FAVORABLE";
+            emoji       = "🎉";
+            isImportant = true;
+            log("STATUS", "¡FAVORABLE detectado!");
 
-        } else if (pageText.contains("NO SE HA ENCONTRADO") || pageText.contains("NO EXISTE")) {
-            log("WARNING", "Datos no localizados. Verifica NIE/fecha.");
+        } else if (bodyText.contains("EN TRÁMITE") || bodyText.contains("EN TRAMITE")) {
+            status      = "⏳ EN TRÁMITE";
+            emoji       = "⏳";
+            isImportant = false;
+            log("STATUS", "Expediente en trámite.");
+
+        } else if (bodyText.contains("DENEGADO") || bodyText.contains("ARCHIVADO") || bodyText.contains("INADMITIDO")) {
+            status      = "⚠️ RESOLUCIÓN NEGATIVA";
+            emoji       = "⚠️";
+            isImportant = true;
+            log("STATUS", "Resolución negativa detectada.");
+
+        } else if (bodyText.contains("NO SE HA ENCONTRADO") || bodyText.contains("NO EXISTE")) {
+            status      = "❓ DATOS NO ENCONTRADOS";
+            emoji       = "❓";
+            isImportant = false;
+            log("STATUS", "Datos no localizados en el sistema.");
+
+        } else if (bodyText.contains("CAPTCHA") || bodyText.contains("CÓDIGO DE VERIFICACIÓN")) {
+            status      = "🤖 CAPTCHA NO RESUELTO";
+            emoji       = "🤖";
+            isImportant = false;
+            log("STATUS", "El servidor rechazó por CAPTCHA no resuelto.");
 
         } else {
-            log("INFO", "Estado no reconocido. Ver captura step4_resultado.png.");
+            // Extract first 300 meaningful chars from body as preview
+            String preview = bodyText.replaceAll("\\s+", " ").trim();
+            preview = preview.length() > 300 ? preview.substring(0, 300) + "..." : preview;
+            status      = "❓ ESTADO DESCONOCIDO";
+            emoji       = "❓";
+            isImportant = false;
+            log("STATUS", "Estado no reconocido. Preview: " + preview);
         }
+
+        // ── Always send Telegram — so user can confirm the bot is alive ───────
+        String message = emoji + " *ExpedienteChecker* — " + LocalDateTime.now().format(DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm")) + "\n\n"
+                + "👤 NIE: `" + MY_NIE + "`\n"
+                + "📋 Estado: *" + status + "*\n"
+                + "🔗 [Ver portal](https://infoext2.delegaciondelgobierno.gob.es/infoext2/)";
+
+        sendTelegram(message);
     }
 
     // ── Navigation with retry ──────────────────────────────────────────────────
@@ -266,7 +335,7 @@ public class ExpedienteChecker {
             HttpResponse<String> resp = client.send(
                     HttpRequest.newBuilder().uri(URI.create(url)).GET().build(),
                     HttpResponse.BodyHandlers.ofString());
-            log("TELEGRAM", "Enviado — HTTP " + resp.statusCode());
+            log("TELEGRAM", "Enviado — HTTP " + resp.statusCode() + " | Body: " + resp.body().substring(0, Math.min(100, resp.body().length())));
         } catch (Exception e) {
             log("TELEGRAM ERR", e.getMessage());
         }
