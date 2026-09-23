@@ -2,13 +2,12 @@ name: ExpedienteChecker — Comprobación Automática
 
 on:
   schedule:
-    # Runs every 30 minutes (GitHub minimum is 5 min, but 30 is safer for rate limits)
-    - cron: '*/30 * * * *'
-  workflow_dispatch:   # Manual trigger from GitHub UI → Actions tab
+    - cron: '*/30 * * * *'   # Every 30 minutes
+  workflow_dispatch:           # Manual trigger from GitHub UI → Actions tab
 
 jobs:
   check-expediente:
-    runs-on: ubuntu-latest   # Free GitHub-hosted runner — no self-hosted needed
+    runs-on: ubuntu-latest
 
     steps:
       # ── 1. Checkout ────────────────────────────────────────────────────────
@@ -23,16 +22,44 @@ jobs:
           java-version: '17'
           cache: maven
 
-      # ── 3. Build fat JAR ───────────────────────────────────────────────────
-      - name: 3. Build fat JAR (maven-assembly-plugin)
+      # ── 3. Install Playwright system dependencies via apt ──────────────────
+      #  This fixes the "missing libraries" warning (libwoff2dec, libvpx, etc.)
+      #  We install them directly via apt BEFORE launching any browser.
+      - name: 3. Install Chromium system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y \
+            libwoff1 \
+            libvpx7 \
+            libevent-2.1-7 \
+            libopus0 \
+            libgstreamer1.0-0 \
+            libgstreamer-plugins-base1.0-0 \
+            libharfbuzz-icu0 \
+            libsecret-1-0 \
+            libhyphen0 \
+            libgles2 \
+            libx264-dev \
+            fonts-liberation \
+            libappindicator3-1 \
+            libasound2 \
+            libatk-bridge2.0-0 \
+            libnspr4 \
+            libnss3 \
+            libxss1 \
+            xdg-utils \
+          || true
+
+      # ── 4. Build fat JAR ───────────────────────────────────────────────────
+      - name: 4. Build fat JAR
         run: mvn -B package --no-transfer-progress
 
-      # ── 4. Install Playwright Chromium ─────────────────────────────────────
-      - name: 4. Install Playwright Chromium browser
-        run: mvn -B exec:java -Dexec.mainClass="com.microsoft.playwright.CLI" -Dexec.args="install chromium --with-deps" --no-transfer-progress
+      # ── 5. Install Playwright Chromium browser binary ──────────────────────
+      - name: 5. Install Playwright Chromium
+        run: mvn -B exec:java -Dexec.mainClass="com.microsoft.playwright.CLI" -Dexec.args="install chromium" --no-transfer-progress
 
-      # ── 5. Run the bot ─────────────────────────────────────────────────────
-      - name: 5. Run ExpedienteChecker
+      # ── 6. Run the bot ─────────────────────────────────────────────────────
+      - name: 6. Run ExpedienteChecker
         env:
           MY_NIE:           ${{ secrets.MY_NIE }}
           FECHA_SOLICITUD:  ${{ secrets.FECHA_SOLICITUD }}
@@ -41,8 +68,8 @@ jobs:
           CHAT_ID:          ${{ secrets.CHAT_ID }}
         run: java -jar target/expediente-checker.jar
 
-      # ── 6. Upload screenshots (always, for debugging) ──────────────────────
-      - name: 6. Upload screenshots
+      # ── 7. Upload screenshots (always — for debugging) ─────────────────────
+      - name: 7. Upload screenshots
         if: always()
         uses: actions/upload-artifact@v4
         with:
