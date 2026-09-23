@@ -31,7 +31,7 @@ import java.util.regex.Pattern;
 public class ExpedienteChecker {
 
     // ── CONFIG ────────────────────────────────────────────────────────────────
-    private static final String TELEGRAM_TOKEN = env("TELEGRAM_TOKEN", "8791426005:AAG-zE-bvklgZ--eKcv-ON2pUuG_owlQnfg");
+    private static final String TELEGRAM_TOKEN = env("TELEGRAM_TOKEN", "8963798723:AAG4MwkWQiNgByxfNotmNdxEQKtGJvBvZCM");
     private static final String CHAT_ID        = env("CHAT_ID",        "6082672502");
     private static final String INFOEXT_URL    = "https://infoext2.delegaciondelgobierno.gob.es/infoext2/";
 
